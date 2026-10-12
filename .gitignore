@@ -1,0 +1,13 @@
+# Credenciales WiFi de los ESP32 (usar config.example.h como plantilla)
+src/**/config.h
+
+# Registros generados por el servidor
+logs/
+
+# Python
+__pycache__/
+*.pyc
+
+# Editores
+.vscode/
+.idea/

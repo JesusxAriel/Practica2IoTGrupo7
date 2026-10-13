@@ -1,3 +1,4 @@
+
 # Credenciales WiFi de los ESP32 (usar config.example.h como plantilla)
 src/**/config.h
 
@@ -11,3 +12,13 @@ __pycache__/
 # Editores
 .vscode/
 .idea/
+
+# Archivos generados por PlatformIO
+.pio/
+
+# Documentacion local que no se subira al repositorio
+/PROYECTO_COMPLETO.md
+
+# Paquetes ZIP locales
+/src/esp32_actuator.zip
+/src/server_python.zip

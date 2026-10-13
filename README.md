@@ -1,11 +1,12 @@
+
 # Práctica 2 — Integración de Objetos Inteligentes con TCP/IP
 
 | | |
 |---|---|
 | **Carrera** | Ingeniería de Sistemas |
 | **Asignatura** | SIS-234 |
-| **Integrantes** | `[Nombre 1]` · `[Nombre 2]` · `[Nombre 3]` |
-| **Cuentas GitHub** | `[@usuario1]` · `[@usuario2]` · `[@usuario3]` |
+| **Integrantes** | Jesús Ariel Mamani Gutierrez · Leonardo Koller Mejia · Luis Felipe Velasco Lopez |
+| **Cuentas GitHub** | [@JesusxAriel](https://github.com/JesusxAriel) · [@leoGKM](https://github.com/leoGKM) · [@feliLuis](https://github.com/feliLuis) |
 | **Fecha de entrega** | Martes 13 de octubre de 2026 |
 | **Versión del informe** | 1.0 |
 
@@ -38,9 +39,20 @@ Los dos ESP32 y la PC se conectan a la red WiFi creada por el **hotspot de un ce
 | RF2 | Clasificar la distancia en 3 rangos contiguos y sin solapamiento. | `RangeClassifier` (§2.7) |
 | RF3 | Activar los actuadores con un comportamiento distinto por rango. | `ControlEngine`, `LED_PROFILES`, `ActuatorController` (§2.7) |
 | RF4 | Sensor → servidor y servidor → actuador mediante sockets TCP sobre WiFi con protocolo de aplicación propio. | Protocolo SDP (§2.5), `TCPClientManager`, `TCPServer` |
-| RF5 | Tratar lecturas inválidas (sin eco, fuera de rango) sin enviar valores falsos a los actuadores. | Mensaje `DATA` con `err`, validación 2–400 cm, estado `FAULT` (§2.5, §2.7) |
+| RF5 | Distinguir entre lecturas válidas, ausencia de eco, mediciones fuera del rango admitido (2–400 cm) y ausencia prolongada de lecturas válidas, sin enviar valores falsos a los actuadores. Una lectura inválida aislada no cambia el estado; solo la ausencia de lecturas válidas durante más de 3 s activa `FAULT` (ver §1.2.1). | Mensaje `DATA` con `err`, validación 2–400 cm, *watchdog* y estado `FAULT` (§2.5, §2.7) |
 | RF6 | Recuperarse automáticamente si se cae el WiFi, el servidor o uno de los clientes. | Reconexión con espera creciente, `PING/PONG`, reemplazo de sesión (§2.5) |
 | RF7 | Registrar los eventos del servidor con marcas de tiempo para poder medir latencias. | `EventLogger` (§3.2) |
+
+#### 1.2.1 Tratamiento de las lecturas (RF5)
+
+| Caso | Descripción | Comportamiento del sistema |
+|------|-------------|----------------------------|
+| **Lectura válida** | Distancia dentro del rango admitido de **2,0 – 400,0 cm**. | El servidor actualiza el instante de la última lectura válida, la clasifica y, solo si el rango cambió, envía `SET_STATE`. |
+| **Ausencia de eco** | El sensor intenta medir pero no obtiene una respuesta válida dentro del timeout de 25 ms; envía `distance_cm: null` y `err: "NO_ECHO"`. Por sí sola **no permite determinar la causa** (puede deberse, entre otras, a un espacio abierto o un objeto fuera de alcance, a una superficie que no refleja bien el sonido o a una falla del sensor o su cableado). **No implica necesariamente que no exista un objeto.** | El servidor la registra como `DATA_INVALID` y **mantiene el estado actual**. No activa `FAULT` por sí sola. |
+| **Medición fuera del rango admitido** | Valor numérico menor que 2,0 cm o mayor que 400,0 cm. | No se acepta como distancia válida: se registra como `DATA_INVALID` y se mantiene el estado actual. |
+| **Ausencia prolongada de lecturas válidas** | Transcurren más de **3 s** sin ninguna lectura válida (por lecturas inválidas continuas, sensor desconectado o sin datos). | El *watchdog* del servidor pasa a `FAULT` y lo envía al actuador (límite esperado: 3,5 s, ver RNF6). |
+
+Una lectura inválida aislada **no** activa `FAULT` inmediatamente; el estado de seguridad depende del tiempo transcurrido sin lecturas válidas (o de que el sensor cierre su conexión TCP).
 
 ### 1.3 Rangos de distancia y comportamiento (variante de 3 LEDs)
 
@@ -68,12 +80,12 @@ Los valores de borde (15 cm y 40 cm) pertenecen al rango superior: 15,0 cm es `M
 
 | ID | Atributo | Valor declarado | Cómo se verifica |
 |----|----------|-----------------|------------------|
-| RNF1 | Estabilidad | Operación continua ≥ 10 min sin reinicios ni bloqueos (la prueba dura 15 min). | PT-08 |
-| RNF2 | Exactitud de medición | Error ≤ ±3 cm respecto a cinta métrica en el **rango de trabajo 5 – 100 cm**. | PT-02 |
-| RNF3 | Tiempo de respuesta | ≤ 1,0 s de extremo a extremo (sensor → servidor → actuador). | PT-06, PT-07 |
+| RNF1 | Estabilidad | Prueba de **15 min** en dos etapas: **10 min de funcionamiento normal** sin reinicios ni bloqueos, seguidos de **5 min de pruebas de fallos** provocados intencionalmente (caída del sensor o del servidor) comprobando la recuperación. Los 15 min **no** corresponden a funcionamiento normal ininterrumpido. | Sin caso de prueba dedicado en este informe |
+| RNF2 | Exactitud de medición | Error ≤ ±3 cm respecto a un **flexómetro** (instrumento de referencia) en el **rango de trabajo comprobado de 5 – 100 cm**. No se verificó la exactitud en todo el rango del sensor (2 – 400 cm). | PT-02 |
+| RNF3 | Tiempo de respuesta | ≤ 1,0 s de extremo a extremo (sensor → servidor → actuador). Es un requisito de latencia, distinto de la frecuencia de muestreo (RNF4). | PT-06, PT-07 |
 | RNF4 | Frecuencia de muestreo | ≥ 2 lecturas/s (diseño: 1 lectura cada 300 ms ≈ 3,3 Hz). | PT-05 |
-| RNF5 | Recuperación | Reconexión automática en ≤ 10 s tras restablecerse la red o el servidor. | PT-09, PT-10 |
-| RNF6 | Detección de falla | Entrada a `FAULT` en ≤ 3,5 s tras dejar de recibir lecturas válidas (3 s de timeout + 0,5 s del periodo del watchdog). | PT-11 |
+| RNF5 | Recuperación | Reconexión automática en ≤ 10 s tras restablecerse la red o el servidor. | PT-08 (reinicio del servidor); la caída del WiFi no se probó en este informe |
+| RNF6 | Detección de falla | Entrada a `FAULT` en ≤ 3,5 s tras dejar de recibir lecturas válidas (3 s de timeout + 0,5 s del periodo del watchdog). | PT-09 |
 | RNF7 | Calidad de código | Modular, orientado a objetos, documentado, con convenciones del lenguaje (PEP 8 en Python; C++/Arduino con una clase por par `.h/.cpp`). | Revisión de código |
 
 ### 1.5 Parámetros de configuración
@@ -131,9 +143,9 @@ Correspondencia con el modelo TCP/IP:
 - El **ESP32 solo soporta 2,4 GHz**. El hotspot debe estar en 2,4 GHz (iPhone: activar "Maximizar compatibilidad"; Android: elegir la banda de 2,4 GHz).
 - La PC (servidor) y los dos ESP32 se conectan al mismo hotspot. Las IP se reparten por DHCP, por lo que **la IP de la PC puede cambiar entre sesiones**: el servidor la muestra al iniciar (y se puede consultar con `ipconfig`); se actualiza `SERVER_IP` en el `config.h` de cada ESP32 antes de la demo.
 - El hotspot suele clasificarse como red *Pública* en Windows: hay que permitir el puerto en el firewall:
-  ```
+```
   netsh advfirewall firewall add rule name="SDP 5050" dir=in action=allow protocol=TCP localport=5050
-  ```
+```
 - El tráfico es local (no consume datos móviles), pero el celular debe mantener el hotspot activo y conectado a la corriente.
 - Las credenciales WiFi **no se suben al repositorio**: cada ESP32 usa un `config.h` listado en `.gitignore`, y se entrega un `config.example.h` como plantilla.
 
@@ -146,29 +158,29 @@ Correspondencia con el modelo TCP/IP:
 | VCC | VIN (5 V) | Alimentación desde USB |
 | GND | GND | Tierra común |
 | Trig | GPIO 5 | Salida del ESP32 (3,3 V es suficiente para disparar) |
-| Echo | GPIO 18 | **Pasa por divisor de tensión** (1 kΩ en serie + 2 kΩ a GND) |
+| Echo | GPIO 18 | Conexión directa, sin resistencias (según el montaje realizado) |
 
-El pin Echo entrega 5 V y los GPIO del ESP32 toleran 3,3 V. El divisor entrega 5 V × 2 kΩ / (1 kΩ + 2 kΩ) ≈ 3,3 V.
+Conexiones físicas del montaje real (sin resistencias):
 
 ```mermaid
 flowchart LR
-    subgraph ESP["ESP32 DevKit (Objeto 1)"]
+    subgraph ESP["ESP32 UltraSonico"]
         P5["GPIO 5"]
         P18["GPIO 18"]
         V5["VIN 5V"]
         G["GND"]
     end
+
     subgraph HC["HC-SR04"]
         TRIG["Trig"]
         ECHO["Echo"]
         VCC["VCC"]
         GND2["GND"]
     end
-    P5 --> TRIG
-    ECHO -- "R1 1 kΩ" --> N(("nodo"))
-    N --> P18
-    N -- "R2 2 kΩ" --> G
-    V5 --> VCC
+
+    P5 --- TRIG
+    P18 --- ECHO
+    V5 --- VCC
     G --- GND2
 ```
 
@@ -188,8 +200,6 @@ flowchart LR
 ```
 
 Corriente aproximada por LED rojo: (3,3 V − 1,8 V) / 220 Ω ≈ 7 mA, dentro del límite del GPIO.
-
-> **[PENDIENTE]** Agregar los diagramas de circuito definitivos como imagen (`docs/circuito_sensor.png`, `docs/circuito_actuador.png`) y la fotografía del montaje real. Ver `GUIA_GRUPO.md`.
 
 ### 2.4 Diagrama de clases (estructural)
 
@@ -372,7 +382,7 @@ El sensor usa `HCSR04Sensor`, `WiFiManager`, `TCPClientManager` y `SDPMessage`. 
 2. Si se conecta un cliente con un `id` que ya tiene sesión activa, el servidor **cierra la sesión anterior** y conserva la nueva (caso típico: el ESP32 se reinició y la conexión vieja quedó a medias).
 3. Tras `INIT_ACK` a un actuador, el servidor le envía de inmediato el **estado actual** (`SET_STATE`), de modo que un actuador que se reconecta queda sincronizado.
 4. El campo `seq` de `SET_STATE` se repite en el `ACK` correspondiente, y el servidor mide con él el tiempo de ida y vuelta del comando.
-5. Lectura inválida: el sensor envía `distance_cm: null` y `err: "NO_ECHO"` si no hubo eco dentro de 25 ms. El servidor considera inválido también cualquier valor fuera de 2,0 – 400,0 cm. Una lectura inválida no cambia el estado.
+5. Lectura inválida: el sensor envía `distance_cm: null` y `err: "NO_ECHO"` si no hubo eco dentro de 25 ms. El servidor considera inválido también cualquier valor fuera de 2,0 – 400,0 cm. Una lectura inválida no cambia el estado (ver §1.2.1).
 6. Si el servidor no recibe ningún mensaje de un cliente durante 15 s, cierra la sesión. Si un cliente no recibe `PONG` durante 15 s, cierra el socket y reconecta.
 7. Solo el sensor puede enviar `DATA` y solo el actuador puede enviar `ACK`; de lo contrario el servidor responde `UNKNOWN_CMD`.
 8. Códigos de `ERROR`: `BAD_JSON`, `UNKNOWN_CMD`, `MISSING_FIELD`, `LINE_TOO_LONG`, `NOT_REGISTERED`.
@@ -497,7 +507,7 @@ Los ESP32 se programan con **PlatformIO** (`platformio.ini` define los entornos 
 | [`protocol.py`](src/server_python/protocol.py) | `Protocol`, `ProtocolError` | Convierte entre línea de texto y diccionario; valida campos, tipos y tamaño máximo. |
 | [`control_engine.py`](src/server_python/control_engine.py) | `Range`, `RangeClassifier`, `ControlEngine` | Clasifica distancias, mantiene el estado, decide cuándo enviar `SET_STATE`, ejecuta el watchdog y calcula el RTT de cada `ACK`. Contiene `LED_PROFILES` (comportamiento de los LEDs por estado). |
 | [`event_logger.py`](src/server_python/event_logger.py) | `EventLogger` | Escribe un CSV (`logs/sdp_<fecha>.csv`) con columnas `timestamp`, `mono_ms`, `event`, `client_id`, `seq`, `detail`. |
-| [`tests/test_integration.py`](src/server_python/tests/test_integration.py) | `TestRangeClassifier`, `TestServer` | 14 pruebas automáticas con un sensor y un actuador simulados: rangos, bordes, `FAULT`, reconexión, sesión duplicada, `PING/PONG`, RTT y errores del protocolo. |
+| [`tests/test_integration.py`](src/server_python/tests/test_integration.py) | `TestRangeClassifier`, `TestServer` | 11 pruebas automáticas con un sensor y un actuador simulados: rangos, bordes, `FAULT`, reconexión, sesión duplicada, `PING/PONG`, RTT y errores del protocolo. |
 
 **Cliente sensor (ESP32, C++/Arduino)**
 
@@ -606,7 +616,7 @@ Al iniciar, el servidor imprime la IP probable de la PC (la que va en `SERVER_IP
 
 ### 4.1 Instrumentos y método
 
-- **Cinta métrica y superficie plana** (una caja o pared) como referencia física para la exactitud.
+- **Flexómetro y superficie plana** (una caja o pared) como instrumento de referencia para la exactitud.
 - **Wireshark en la PC**, capturando en la interfaz WiFi conectada al hotspot. Como el servidor está en la misma PC, la captura ve todo el tráfico de los dos ESP32. Filtros útiles:
   - `tcp.port == 5050` (todo el sistema).
   - `ip.addr == <IP_sensor> && tcp.port == 5050` (solo el sensor).
@@ -614,47 +624,75 @@ Al iniciar, el servidor imprime la IP probable de la PC (la que va en `SERVER_IP
   - Clic derecho → *Follow → TCP Stream* para leer los mensajes JSON completos.
 - **Registro del servidor** (`logs/sdp_*.csv`), procesado con [`tools/analizar_log.py`](tools/analizar_log.py).
 - **Monitor serie** de cada ESP32, para ver la distancia medida y los estados.
+- **Cámara lenta** del celular para medir el tiempo de respuesta extremo a extremo.
 - Todas las evidencias se guardan en `docs/evidencias/`.
 
 ### 4.2 Plan de pruebas
 
 | ID | Requisito | Procedimiento | Criterio de aceptación | Evidencia |
 |----|-----------|---------------|------------------------|-----------|
-| PT-01 | RF1 | Colocar un obstáculo a distancias conocidas y leer el monitor serie. | El sensor entrega valores coherentes. | Captura del monitor serie |
-| PT-02 | RF1, RNF2 | Medir a 5, 10, 15, 20, 30, 40, 50, 75 y 100 cm con cinta métrica; tomar 10 lecturas por punto. | Error máximo ≤ ±3 cm en todo el rango 5 – 100 cm. | Tabla 5.1 |
-| PT-03 | RF2, RF3 | Colocar el obstáculo a 8, 25 y 60 cm (un punto por rango). | `CLOSE`: rojo parpadea; `MEDIUM`: amarillo parpadea; `FAR`: verde fijo. | Foto/video, log |
-| PT-04 | RF2, RF3 | Valores límite: acercar y alejar el obstáculo cruzando 15 cm y 40 cm; verificar la clasificación con los valores de borde. | 15,0 → `MEDIUM`; 40,0 → `FAR`; sin solapamiento ni estados intermedios. | Log, Tabla 5.2 |
-| PT-05 | RF4, RNF4 | Dejar el sistema 60 s y contar los mensajes `DATA` (log y captura de Wireshark). | ≥ 2 lecturas/s (esperado ≈ 3,3). | Log, captura `.pcapng` |
-| PT-06 | RF4, RNF3 | Con el log del servidor, medir ∆t entre `DATA` y `SET_STATE_SENT`, y el RTT `SET_STATE` → `ACK`. | ∆t del servidor y RTT con el actuador reportados (Tabla 5.3). | Log, captura |
-| PT-07 | RNF3 | Cambio de rango real con el obstáculo: grabar en cámara lenta desde que el obstáculo cruza el umbral hasta que cambia el LED. Repetir 10 veces. | Tiempo extremo a extremo ≤ 1,0 s en las 10 repeticiones. | Videos, Tabla 5.3 |
-| PT-08 | RNF1 | Sistema funcionando 15 min moviendo el obstáculo entre los 3 rangos. | Sin reinicios, bloqueos ni pérdida de conexión. | Log, captura |
-| PT-09 | RF6, RNF5 | Reiniciar el servidor con los clientes encendidos. | Los dos clientes reconectan en ≤ 10 s y el actuador vuelve al estado correcto. | Log, monitor serie |
-| PT-10 | RF6, RNF5 | Apagar y volver a encender el hotspot. | Los ESP32 reconectan WiFi y TCP en ≤ 10 s. | Log, monitor serie |
-| PT-11 | RF5, RNF6 | Desconectar el cable de Echo con el sistema en marcha. | En ≤ 3,5 s el actuador entra a `FAULT` (3 LEDs parpadeando); al reconectar vuelve al rango real. | Video, log |
-| PT-12 | RF5 | Apuntar el sensor al aire (sin eco) y a un objeto a < 2 cm. | Las lecturas inválidas no cambian el estado antes de 3 s. | Log |
-| PT-13 | RF4 | Enviar manualmente un mensaje JSON inválido al servidor. | El servidor responde `ERROR` y sigue operando. | Captura, log |
-| PT-14 | RF4 | Verificar con *Follow TCP Stream* que los mensajes cumplen el formato SDP (JSON, `\n`, campos). | Cumple §2.5. | Captura |
-| PT-15 | RF2, RF3, RF5, RF6 | Ejecutar `python -m unittest discover -s tests -v` en el servidor. | 14 de 14 pruebas aprobadas. | Salida de consola |
+| PT-01 | RF1 | Colocar un obstáculo a distancias conocidas (≈ 10, 30 y 60 cm) y leer el monitor serie. | El sensor entrega valores coherentes y se identifica el rango correspondiente. | Fotografías del montaje con flexómetro y de la pantalla |
+| PT-02 | RF1, RNF2 | Medir a 5, 10, 15, 20, 30, 40, 50, 75 y 100 cm con **flexómetro** como referencia; tomar 10 lecturas por punto. | Error máximo ≤ ±3 cm en el rango comprobado 5 – 100 cm. | Video de la prueba |
+| PT-03 | RF2, RF3 | Colocar el obstáculo a 8, 25 y 60 cm (un punto por rango). | `CLOSE`: rojo parpadea; `MEDIUM`: amarillo parpadea; `FAR`: verde fijo. | Fotos de los 3 rangos |
+| PT-04 | RF2, RF3 | Valores límite: acercar y alejar el obstáculo cruzando 15 cm y 40 cm; los valores exactos de borde se verifican con pruebas automáticas. | 14,9 → `CLOSE`; 15,0 → `MEDIUM`; 39,9 → `MEDIUM`; 40,0 → `FAR`; sin solapamiento ni estados intermedios. | Fotos de la prueba física |
+| PT-05 | RF4, RNF4 | Dejar el sistema 60 s y contar las lecturas recibidas por el servidor. | ≥ 2 lecturas/s (esperado ≈ 3,3). | Video del conteo |
+| PT-06 | RF4, RNF3 | Mover el obstáculo entre los 3 rangos al menos 10 veces; con el log del servidor y `analizar_log.py`, obtener ∆t entre `DATA` y `SET_STATE_SENT` y el RTT `SET_STATE` → `ACK`. | Métricas calculadas y reportadas. No hay umbral numérico propio. | Video de muestra |
+| PT-07 | RNF3 | Grabar en cámara lenta el cambio de rango entre rojo y verde, 10 repeticiones por sentido (rojo → verde y verde → rojo). | Tiempo extremo a extremo ≤ 1,0 s en todas las repeticiones. | Video en cámara lenta |
+| PT-08 | RF6, RNF5 | Detener el servidor (`Ctrl+C`) y volver a iniciarlo con los clientes encendidos; registrar `SERVER_START` y los `REGISTER` de ambos ESP32. | Los dos clientes se registran en ≤ 10 s y el actuador recupera el estado correcto. | Video |
+| PT-09 | RF5, RNF6 | Con un objeto a ≈ 25 cm, desconectar el cable de Echo y cronometrar hasta que los tres LEDs parpadeen juntos; reconectar y comprobar la recuperación. Repetir apagando el ESP32 del sensor. | `FAULT` en ≈ 3 – 3,5 s; al restablecer el sensor vuelve al rango real. | Video |
+| PT-10 | RF5 | (a) Apuntar el sensor al vacío (sin eco) menos de 3 s y volver a medir un objeto. (b) Mantener la ausencia de eco más de 3 s. (c) Acercar el objeto a menos de 2 cm. | (a) El estado no cambia con una ausencia breve. (b) Tras más de 3 s sin lecturas válidas se activa `FAULT`. (c) Una lectura inferior a 2 cm es inválida y no cambia el estado antes de 3 s. | Videos de los 3 casos |
+| PT-11 | RF4 | Capturar con `tcp.port == 5050` y verificar con *Follow TCP Stream* que los mensajes cumplen el formato SDP (JSON, `\n`, campos) para sensor y actuador. | Cumple §2.5: se identifican `INIT`, `INIT_ACK`, `DATA`, `SET_STATE`, `ACK` y `PING/PONG`, uno por línea. | Capturas de Wireshark y registros del servidor |
+| PT-12 | RF2, RF3, RF5, RF6 | Ejecutar `python -m unittest discover -s tests -v` en el servidor y guardar la salida en `docs/evidencias/`. | `Ran 11 tests ... OK`, sin errores ni fallos. | Salida de consola |
 
-### 4.3 Ejecución de pruebas
+### 4.3 Ejecución de pruebas y evidencias
 
-| ID | Fecha | Responsable | Resultado (Aprobada / Falló) | Observaciones |
-|----|-------|-------------|------------------------------|---------------|
-| PT-01 | `[PENDIENTE]` | | | |
-| PT-02 | `[PENDIENTE]` | | | |
-| PT-03 | `[PENDIENTE]` | | | |
-| PT-04 | `[PENDIENTE]` | | | |
-| PT-05 | `[PENDIENTE]` | | | |
-| PT-06 | `[PENDIENTE]` | | | |
-| PT-07 | `[PENDIENTE]` | | | |
-| PT-08 | `[PENDIENTE]` | | | |
-| PT-09 | `[PENDIENTE]` | | | |
-| PT-10 | `[PENDIENTE]` | | | |
-| PT-11 | `[PENDIENTE]` | | | |
-| PT-12 | `[PENDIENTE]` | | | |
-| PT-13 | `[PENDIENTE]` | | | |
-| PT-14 | `[PENDIENTE]` | | | |
-| PT-15 | `[PENDIENTE]` | | | |
+Los casos de prueba se elaboraron y ejecutaron en conjunto por los tres integrantes en la universidad. A continuación se presenta el registro de cada caso, con su procedimiento, criterio, resultado obtenido y estado, y luego el registro de evidencias.
+
+#### PT-01 a PT-05: sensor, rangos y muestreo
+
+| ID / caso de prueba | Procedimiento | Resultado esperado | Criterio de aprobación | Evidencia | Resultado obtenido / estado |
+|---|---|---|---|---|---|
+| PT-01. Lecturas coherentes del sensor | Colocar un objeto aproximadamente a 10, 30 y 60 cm del HC-SR04. Observar las lecturas enviadas por el ESP32 y recibidas por el servidor. | Las lecturas deben ser coherentes con las distancias reales y permitir identificar los rangos `CLOSE`, `MEDIUM` y `FAR`. | Se aprueba si las lecturas son coherentes y el sistema identifica el rango correspondiente. | Fotografías del montaje con flexómetro. | Resultado: Al medir 10 cm muestra 10.9, al medir 30 cm muestra 29.0 y al medir 60 cm muestra 56.9. Estado: **Aprobado** |
+| PT-02. Exactitud de las mediciones | Medir distancias reales de 5, 10, 15, 20, 30, 40, 50, 75 y 100 cm. Tomar 10 lecturas por cada distancia y comparar cada lectura con la medición real. | El error absoluto máximo debe ser de **3 cm o menos**. | Se aprueba si el error absoluto de las mediciones no supera 3 cm. Registrar las mediciones y sus errores. | Fotografías / video con flexómetro. | Error máximo: 1.03 cm. Estado: **Aprobado** |
+| PT-03. Funcionamiento de los LEDs por rango | Colocar un objeto a 8 cm, 25 cm y 60 cm. Observar los tres LEDs del actuador en cada posición. | A 8 cm: LED rojo parpadea cada 150 ms. A 25 cm: LED amarillo parpadea cada 500 ms. A 60 cm: LED verde permanece encendido. | Se aprueba si cada distancia activa el LED y el comportamiento esperado para su rango. | Fotografías con flexómetro de los 3 resultados. | Resultado: 8 cm → LED rojo, 25 cm → LED amarillo, 60 cm → LED verde. Estado: **Aprobado** |
+| PT-04. Verificación de límites entre rangos | Probar los valores límite de 15 y 40 cm. Verificar automáticamente las clasificaciones exactas y, si se realiza la prueba física, registrar la distancia observada. | 14,9 cm → `CLOSE`; 15,0 cm → `MEDIUM`; 39,9 cm → `MEDIUM`; 40,0 cm → `FAR`. | Se aprueba si las clasificaciones corresponden a los intervalos establecidos. Los valores exactos deben comprobarse mediante pruebas automáticas. | Fotografías de la prueba física. | Resultado: Cumple con lo esperado. Estado: **Aprobado** |
+| PT-05. Frecuencia de muestreo | Mantener el sistema funcionando durante al menos 60 segundos y contar las lecturas recibidas. Calcular las lecturas por segundo. | La frecuencia debe ser de **al menos 2 lecturas por segundo**. Se espera una frecuencia aproximada de 3,3 lecturas por segundo. | Se aprueba si la frecuencia calculada es igual o superior a 2 lecturas/s. | Video de las lecturas en 60 segundos. | Frecuencia: 3.05 lecturas/s. Estado: **Aprobado** |
+
+#### PT-06 a PT-08: latencia y reconexión
+
+| ID / caso de prueba | Procedimiento | Resultado esperado | Criterio de aprobación | Evidencia | Resultado obtenido / estado |
+|---|---|---|---|---|---|
+| PT-06. Medición de latencia del servidor | Mover un objeto entre los tres rangos al menos 10 veces. Analizar el tiempo entre el evento `DATA` y `SET_STATE_SENT`, así como el RTT de los mensajes `SET_STATE` y `ACK`. | El script `analizar_log.py` debe calcular y mostrar las métricas de latencia que pueda obtener del log. | Registrar los valores medidos y verificar que las métricas se calculen correctamente. No se establece un umbral numérico de aprobación para esta prueba. | Video de muestra. | Estado: **Aprobado** |
+| PT-07. Tiempo de respuesta de extremo a extremo | Grabar en cámara lenta el movimiento de un objeto entre los rangos rojo y verde. Realizar 10 mediciones por cada dirección: rojo a verde y verde a rojo. | El tiempo de respuesta esperado es aproximadamente de 0,1 a 0,5 segundos. | Se aprueba si el tiempo es **igual o inferior a 1,0 s en las 10 repeticiones** de cada dirección. | Videos de las pruebas. | Máximo medido: 0.3 s. Estado: **Aprobado** |
+| PT-08. Reinicio del servidor Python | Con el sistema funcionando, detener el servidor con `Ctrl+C` y volver a iniciarlo. Registrar el evento `SERVER_START` y los eventos `REGISTER` de ambos ESP32. Comprobar el estado mostrado por el actuador. | Ambos clientes deben registrarse nuevamente en **10 segundos o menos** y el actuador debe recuperar el estado correcto a medida que el servidor recibe lecturas válidas del sensor. | Se aprueba si ambos clientes se registran dentro de los 10 segundos y el actuador recupera el comportamiento correspondiente al estado real. | Log anterior y nuevo, monitores serie y video o captura del actuador durante la recuperación. | Sensor: 3 s. Actuador: 3 s. Estado: **Aprobado** |
+
+#### PT-09 a PT-12: fallos, protocolo y pruebas automáticas
+
+| ID / caso de prueba | Procedimiento | Resultado esperado | Criterio de aprobación | Evidencia | Resultado obtenido / estado |
+|---|---|---|---|---|---|
+| PT-09. Falla del sensor y activación de `FAULT` | Con un objeto a unos 25 cm, desconectar el cable `Echo` y cronometrar hasta que los tres LEDs parpadeen juntos. Reconectar el cable y comprobar la recuperación. Repetir apagando el ESP32 del sensor. | Con la falla, el sistema debe entrar en `FAULT` en aproximadamente **3 a 3,5 segundos**. Al restablecer el sensor, debe volver al rango real. | Se aprueba si se activa `FAULT` dentro del intervalo esperado y el sistema recupera el rango correcto al volver a recibir lecturas válidas. | Video con la prueba de la desconexión del cable Echo y la reacción del circuito. | Echo desconectado: 3 s. Sensor apagado: 3 s. Estado: **Aprobado** |
+| PT-10. Lecturas inválidas | (a) Apuntar el sensor a un espacio abierto sin eco por menos de 3 segundos y volver a medir un objeto. (b) Mantener la ausencia de eco por más de 3 segundos. (c) Acercar el objeto a menos de 2 cm. | (a) El estado no debe cambiar durante una ausencia breve de eco. (b) Tras más de 3 segundos sin lecturas válidas, debe activarse `FAULT`. (c) Una lectura inferior a 2 cm se considera inválida y no debe cambiar el estado antes de los 3 segundos. | Se aprueba si el sistema ignora las lecturas inválidas de corta duración y activa `FAULT` cuando corresponde por tiempo sin lecturas válidas. | Videos de muestra de las 3 situaciones. | (a) **Aprobado**. (b) **Aprobado**. (c) **Aprobado**. Estado: **Aprobado** |
+| PT-11. Verificación del protocolo SDP en Wireshark | Capturar tráfico con el filtro `tcp.port == 5050`. Seleccionar un paquete `DATA` y usar `Follow → TCP Stream`. Repetir para el sensor y el actuador. | Deben observarse mensajes `INIT`, `INIT_ACK`, varios `DATA`, `SET_STATE`, `ACK` y `PING/PONG`, delimitados por saltos de línea. | Se aprueba si la captura permite identificar los mensajes esperados y verificar que cada mensaje del protocolo ocupa una línea. | Capturas de pantalla de Wireshark y registros del servidor. | Verificación del protocolo SDP mediante Wireshark y registros del servidor (ver evidencias). Estado: **Aprobado** |
+| PT-12. Ejecución de pruebas automáticas | Desde `src/server_python`, ejecutar `python -m unittest discover -s tests -v`. Guardar la salida en `docs/evidencias/PT-12_consola.txt`. | Ejecución de **11 pruebas** con resultado `OK`. | Se aprueba si la ejecución termina correctamente y muestra `Ran 11 tests ... OK`, sin errores ni fallos. | Archivo `PT-12_consola.txt` con la salida completa de la terminal. | Pruebas ejecutadas: 11. Fallos: 0. Estado: **Aprobado** |
+
+#### Registro final de evidencias
+
+| Caso | Evidencias | Observaciones |
+|---|---|---|
+| PT-01 | [1](https://lh3.googleusercontent.com/d/1Xb5IOgzr5qq7mcqvOMqpD23ZGZfQcWP1) · [2](https://lh3.googleusercontent.com/d/1bvKetJZnNhjExYOynA10fjrBFSNG5B8-) · [3](https://lh3.googleusercontent.com/d/1dVB2lGFTKSFo9m94bFPwi4FDLyLh_8V-) · [4](https://lh3.googleusercontent.com/d/1FxQWFqCj0qtRcuIb4D7uUogInu7DInm2) · [5](https://lh3.googleusercontent.com/d/1Jmb105axU7zAr-EWIm8tWCK5e89BS2um) · [6](https://lh3.googleusercontent.com/d/19nkYZiukPj6znb1nmuQzloIr56da8J7Z) | Fotos de las medidas, tanto en la pantalla como físicas. |
+| PT-02 | [Video](https://lh3.googleusercontent.com/d/1VD46ObeEV0w12-pc05FYzlocTarRzcaD) | Video de muestra de cómo cambian las diferentes medidas. |
+| PT-03 | [8 cm](https://lh3.googleusercontent.com/d/1j_wyYHyh0c8K4vl9liSZ2lPyXeQRDXYh) · [25 cm](https://lh3.googleusercontent.com/d/197OECtHXzNOo7zWutcR_6gKmJ4A6hpkE) · [60 cm](https://lh3.googleusercontent.com/d/12aKc40uEzT80COZKkPxHwCC0WrIL0gyG) | Para cada medida se enciende un LED distinto. |
+| PT-04 | [1](https://lh3.googleusercontent.com/d/1_zQR39bsGq6wosVAGaZi3r3mm_cbZ5kX) · [2](https://lh3.googleusercontent.com/d/1rGfU-CxOIFHDuu-FsJYpZCHr8vBsdcCJ) · [3](https://lh3.googleusercontent.com/d/1pIg9vPwDpsXGMO8D8veVOCxthoMFemd4) · [4](https://lh3.googleusercontent.com/d/1yNEjww0u5KQQJAs0_kUojX-rpVoVilS3) | Muestra la reacción en los 2 límites y la reacción de los LEDs. |
+| PT-05 | [Video](https://lh3.googleusercontent.com/d/13QMhW_xh5157mqSPtZGxB_z77H0-O_S7) | Conteo de 183 lecturas en 60 s. |
+| PT-06 | [Video](https://lh3.googleusercontent.com/d/1It97yJfnofLUD-NKjenqCM_ZmKXaRvmn) | Reacción del sistema al cambiar la ubicación del objeto que se mide. |
+| PT-07 | [Video](https://lh3.googleusercontent.com/d/1G5xdgHjXZcH8kv7skTc-NEDPpU6PrBFo) | Reacción del sistema en cámara lenta. |
+| PT-08 | [Video](https://lh3.googleusercontent.com/d/1EP5ptU8E8D5dQZhdOmyS0EMam3c0WgLa) | Cómo reacciona después de interrumpir la ejecución del servidor. |
+| PT-09 | [Video](https://lh3.googleusercontent.com/d/10TIHfO9ZefATqnl6J-Zm3OgW3gFko1zC) | Cómo reacciona al desconectar el cable Echo. |
+| PT-10 | [(a)](https://lh3.googleusercontent.com/d/1ncsFA11-XDGhT0N5GznXNjTr0xxzKeBU) · [(b)](https://lh3.googleusercontent.com/d/1kZjgyiQIXywshy4z_KmPT8GY34ORJMCp) · [(c)](https://lh3.googleusercontent.com/d/16cOllOYqKyGxhPyoUnGAkEfRpcdtjsUB) | Cómo reacciona en los 3 casos de apuntado al vacío. |
+| PT-11 | [1](https://lh3.googleusercontent.com/d/1taMghevDjbZBLrqE_iRf0VRRphupr_vL) · [2](https://lh3.googleusercontent.com/d/1l6TwYNLv7dMQP3g2_bHAqXsjO3qREvtN) | Verificación SDP mediante Wireshark y registros del servidor. |
+| PT-12 | [Salida de consola](https://lh3.googleusercontent.com/d/1Fq7IHVJT7T2OP8P4Sw0OIPROsMMCm0KX) | Todas las pruebas pasaron correctamente. |
+
+**Estados posibles:** *Aprobado* (cumple todos los criterios), *Fallido* (no cumple al menos uno), *Pendiente* (no se ejecutó o falta evidencia) y *No concluyente* (se ejecutó, pero los datos no permiten determinar si cumple).
 
 ### 4.4 Presupuesto de tiempo esperado (RNF3)
 
@@ -670,64 +708,63 @@ Análisis previo a la medición, para saber qué esperar:
 | Aplicación del estado en el LED | < 5 ms |
 | **Total peor caso estimado** | **≈ 0,5 s** |
 
-El margen respecto a 1,0 s es de aproximadamente 0,5 s. Las cifras de red son estimaciones y se contrastan con las medidas de PT-06 y PT-07 en la sección 5.
-
----
+El margen respecto a 1,0 s es de aproximadamente 0,5 s. Las cifras de red son estimaciones y se contrastan con las medidas de PT-06 y PT-07 en la sección 
 
 ## 5. Resultados
 
-> **[PENDIENTE]** Se llena con los datos reales de las pruebas (ver `GUIA_GRUPO.md`). No se incluyen valores inventados.
+> Se consignan únicamente datos documentados en el registro de pruebas; no se incluyen valores inventados. Las celdas vacías están pendientes.
 
-### 5.1 Exactitud de medición (PT-02)
+### 5.1 Exactitud de medición (PT-02, RNF2)
 
-| Distancia real (cm) | Promedio medido (cm) | Error máx. (cm) | ¿≤ ±3 cm? |
-|---------------------|----------------------|------------------|-----------|
-| 5 | | | |
-| 10 | | | |
-| 15 | | | |
-| 20 | | | |
-| 30 | | | |
-| 40 | | | |
-| 50 | | | |
-| 75 | | | |
-| 100 | | | |
+Referencia: flexómetro. Rango comprobado: 5 – 100 cm (no se verificó la exactitud en todo el rango de 2 – 400 cm del sensor). **Error máximo registrado: 1,03 cm**, dentro del criterio de ±3 cm.
+
+
+Lecturas puntuales de PT-01 (monitor serie): 10 cm → 10,9 · 30 cm → 29,0 · 60 cm → 56,9.
 
 ### 5.2 Clasificación en valores límite (PT-04)
 
 | Distancia medida (cm) | Estado esperado | Estado obtenido |
 |-----------------------|-----------------|-----------------|
-| 14,9 | `CLOSE` | |
-| 15,0 | `MEDIUM` | |
-| 39,9 | `MEDIUM` | |
-| 40,0 | `FAR` | |
+| 14,9 | `CLOSE` | Conforme (registro PT-04) |
+| 15,0 | `MEDIUM` | Conforme (registro PT-04) |
+| 39,9 | `MEDIUM` | Conforme (registro PT-04) |
+| 40,0 | `FAR` | Conforme (registro PT-04) |
 
 ### 5.3 Tiempos de respuesta y frecuencia de muestreo (PT-05, PT-06, PT-07)
 
+**Frecuencia de muestreo (RNF4).** En PT-05 se contaron **183 lecturas en 60 s** en el servidor:
+
+183 / 60 ≈ **3,05 lecturas/s**, por encima del mínimo de 2 lecturas/s (el diseño prevé ≈ 3,3). Es una frecuencia **observada mediante conteo**, no una medición automatizada de precisión.
+
+**Tiempo de respuesta (RNF3).** La frecuencia de muestreo **no** demuestra la latencia: las 183 lecturas por minuto indican cuántas muestras llegan al servidor, no cuánto tarda un cambio de rango en reflejarse en el LED. La latencia se evalúa con PT-06 (log del servidor) y PT-07 (cámara lenta). Además, se observó puntualmente que el actuador respondía en ≈ 0,2 s; esa es una **observación puntual no documentada formalmente** y no se usa como prueba.
+
 | Medida | Valor obtenido | Límite |
 |--------|----------------|--------|
-| Lecturas por segundo (promedio de 60 s) | | ≥ 2 |
-| ∆t `DATA` → `SET_STATE` en el servidor (promedio / máx.) | | (informativo) |
-| RTT `SET_STATE` → `ACK` (promedio / máx.) | | (informativo) |
-| Tiempo extremo a extremo (promedio / máx. de 10 repeticiones) | | ≤ 1,0 s |
+| Lecturas por segundo (183 lecturas en 60 s, conteo observado) | ≈ 3,05 | ≥ 2 |
+| ∆t `DATA` → `SET_STATE` en el servidor (promedio / máx.) | `[PENDIENTE]` | (informativo) |
+| RTT `SET_STATE` → `ACK` (promedio / máx.) | `[PENDIENTE]` | (informativo) |
+| Tiempo extremo a extremo en cámara lenta (PT-07, 10 repeticiones por sentido) | Máximo registrado: 0,3 s | ≤ 1,0 s |
 
-### 5.4 Estabilidad y recuperación (PT-08 a PT-11)
+El cumplimiento de RNF3 se sustenta únicamente en el registro de PT-07 y sus videos; las métricas del servidor (PT-06) están pendientes de transcribir.
+
+### 5.4 Recuperación y fallas (PT-08 a PT-10)
 
 | Prueba | Resultado |
 |--------|-----------|
-| Operación continua (duración real) | |
-| Reconexión tras reinicio del servidor (tiempo) | |
-| Reconexión tras reinicio del hotspot (tiempo) | |
-| Entrada a `FAULT` tras desconectar el sensor (tiempo) | |
+| Reconexión tras reinicio del servidor (PT-08, RNF5) | Sensor: 3 s · actuador: 3 s (observado; límite exigido: 10 s). |
+| Entrada a `FAULT` tras desconectar el sensor (PT-09, RNF6) | Echo desconectado: 3 s · sensor apagado: 3 s (límite esperado: 3,5 s). |
+| Lecturas inválidas (PT-10, RF5) | (a) Ausencia breve de eco sin cambio de estado: aprobado. (b) Ausencia de más de 3 s → `FAULT`: aprobado. (c) Lectura < 2 cm tratada como inválida: aprobado. |
 
-### 5.5 Análisis de errores
+**Notas sobre la evidencia:**
 
-`[PENDIENTE]`
-
+- **RNF5.** Sensor y actuador se registraron de nuevo en unos 3 s tras reiniciar el servidor, frente al límite exigido de 10 s. Es una observación puntual con la precisión que permite el cronometraje manual o visual; no se generaliza a todas las reconexiones posibles. La reconexión tras la caída del WiFi no se probó en este informe.
+- **RNF6.** El intervalo se **cronometró manualmente desde que se desconectó el cable de Echo (o se apagó el ESP32 del sensor) hasta que los tres LEDs empezaron a parpadear juntos**. No se midió desde el instante exacto de la última lectura válida, por lo que la cifra de 3 s es aproximada. Se diferencia el límite esperado (≤ 3,5 s) del resultado observado (≈ 3 s). También se comprobó que, al reconectar el sensor, el sistema vuelve al rango real.
+- **PT-12.** Se ejecutaron 11 pruebas automáticas del servidor, con 0 fallos ni errores.
 ---
 
 ## 6. Conclusiones
 
-`[PENDIENTE]`
+Las pruebas del proyecto SDP concluyeron con éxito, validando de forma empírica la precisión de las lecturas del HC-SR04 (error máximo de 1.03 cm), la fluidez de la red con una frecuencia de muestreo de 3.05 lecturas/s y una latencia extremo a extremo de solo 0.3 s, así como la resiliencia del sistema ante desconexiones, reinicios y lecturas inválidas al activar el estado de falla (FAULT) en menos de 3.0 s. Con una tasa de aprobación del 100% en la suite de pruebas unitarias automáticas (11/11), se declara el sistema APROBADO por cumplir satisfactoriamente con los requisitos funcionales, métricas de rendimiento y mecanismos de tolerancia a fallos exigidos.
 
 ---
 
@@ -736,15 +773,15 @@ El margen respecto a 1,0 s es de aproximadamente 0,5 s. Las cifras de red son es
 Recomendaciones técnicas desde el diseño (se ajustan con los resultados reales):
 
 1. **Histéresis en los umbrales.** Cerca de 15 cm y 40 cm, una lectura que oscila puede hacer cambiar el estado repetidamente. Una histéresis de 1 – 2 cm (cambiar de rango solo si se supera el umbral por ese margen) reduce el parpadeo en el borde. No se aplicó para que la clasificación sea exactamente la definida en §1.3.
-2. **Sin eco no siempre significa falla.** Al apuntar a un espacio abierto, el HC-SR04 no recibe eco y reporta `NO_ECHO`; en este diseño eso termina en `FAULT` después de 3 s. Si la aplicación necesitara tratarlo como "muy lejos", habría que distinguirlo de un sensor desconectado.
+2. **Sin eco no siempre significa falla.** Al apuntar a un espacio abierto, el HC-SR04 no recibe eco y reporta `NO_ECHO`; en este diseño, si la ausencia de lecturas válidas dura más de 3 s, termina en `FAULT`. Si la aplicación necesitara tratarlo como "muy lejos", habría que distinguirlo de un sensor desconectado.
 3. **Compensar la temperatura.** El código usa 343 m/s (20 °C). La velocidad del sonido aumenta con la temperatura (≈ 0,6 m/s por °C), por lo que a temperaturas altas la distancia se subestima ligeramente; un sensor de temperatura permitiría corregirlo.
 4. **Sincronizar relojes** (por ejemplo, con NTP) para medir la latencia unidireccional entre el ESP32 y el servidor sin depender solo del reloj de la PC.
 5. **Reutilizar código común** (`WiFiManager`, `TCPClientManager`, `SDPMessage`) como biblioteca compartida de PlatformIO (`lib/`) en lugar de duplicarlo en cada firmware.
 6. **Cifrado y autenticación.** SDP viaja en texto plano; para un uso real se recomienda TLS y un identificador/clave por dispositivo.
 7. **Fijar la IP del servidor** con un router que permita reservas DHCP, para no editar `config.h` en cada sesión (el hotspot del celular no lo permite).
 8. **Alimentación estable** para los ESP32 (cargador de buena calidad), ya que las caídas de tensión afectan el WiFi y las lecturas.
+9. **Proteger el pin Echo.** El HC-SR04 alimentado a 5 V entrega 5 V en Echo, mientras que los GPIO del ESP32 toleran 3,3 V. El montaje realizado conecta Echo directamente a GPIO 18; para un uso prolongado se recomienda un divisor de tensión (por ejemplo, 1 kΩ + 2 kΩ) o un adaptador de nivel lógico.
 
-> **[PENDIENTE]** Añadir recomendaciones derivadas de los problemas reales encontrados durante las pruebas.
 
 ---
 
@@ -752,11 +789,11 @@ Recomendaciones técnicas desde el diseño (se ajustan con los resultados reales
 
 | Anexo | Contenido | Ubicación |
 |-------|-----------|-----------|
-| A | Diagramas (arquitectura, circuitos, clases, secuencia) en imagen | `docs/` `[PENDIENTE]` |
-| B | Fotografías del montaje de cada objeto inteligente | `docs/evidencias/` `[PENDIENTE]` |
-| C | Capturas de Wireshark (`.pcapng` y capturas de pantalla) | `docs/evidencias/` `[PENDIENTE]` |
-| D | Logs del servidor (CSV) de las pruebas | `docs/evidencias/` `[PENDIENTE]` |
-| E | Videos o enlaces de la demostración | `[PENDIENTE]` |
+| A | Diagramas (arquitectura, circuitos, clases, secuencia) en imagen | `docs/` |
+| B | Fotografías del montaje de cada objeto inteligente | `docs/evidencias/ |
+| C | Capturas de Wireshark (`.pcapng` y capturas de pantalla) | Capturas de pantalla: enlaces de PT-11 en §4.3. Archivos `.pcapng`: `docs/evidencias/`|
+| D | Logs del servidor (CSV) de las pruebas | `docs/evidencias/` |
+| E | Fotos y videos de las pruebas | Enlaces en el registro de evidencias de §4.3 |
 | F | Hojas de datos del HC-SR04 y del ESP32 | Enlaces del fabricante |
 | G | Reparto de trabajo por integrante | Tabla siguiente |
 
@@ -764,6 +801,8 @@ Recomendaciones técnicas desde el diseño (se ajustan con los resultados reales
 
 | Integrante | Módulos / tareas | Cuenta GitHub |
 |------------|------------------|---------------|
-| `[Nombre 1]` | `[PENDIENTE]` | `[@usuario1]` |
-| `[Nombre 2]` | `[PENDIENTE]` | `[@usuario2]` |
-| `[Nombre 3]` | `[PENDIENTE]` | `[@usuario3]` |
+| Jesús Ariel Mamani Gutierrez | ESP32 sensor (`src/esp32_sensor/`: `HCSR04Sensor`, `WiFiManager`, `TCPClientManager`, `SDPMessage`, `main.cpp`) | [@JesusxAriel](https://github.com/JesusxAriel) |
+| Leonardo Koller Mejia | Servidor Python (`src/server_python/`: `TCPServer`, `Protocol`, `ControlEngine`, `EventLogger`, pruebas automáticas) | [@leoGKM](https://github.com/leoGKM) |
+| Luis Felipe Velasco Lopez | ESP32 actuador (`src/esp32_actuator/`: `LedActuator`, `ActuatorController`, `WiFiManager`, `TCPClientManager`, `SDPMessage`, `main.cpp`) | [@feliLuis](https://github.com/feliLuis) |
+
+**Trabajo conjunto:** los tres integrantes se reunieron en la universidad para elaborar y ejecutar los casos de prueba (§4).

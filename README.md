@@ -23,7 +23,7 @@ Se ejecutaron 12 casos de prueba (PT-01 a PT-12) y todos quedaron aprobados (§4
 | Respuesta de extremo a extremo (PT-07) | Máximo medido de 0,3 s | ≤ 1,0 s |
 | Reconexión tras reinicio del servidor (PT-08) | ≈ 3 s | ≤ 10 s |
 | Entrada a `FAULT` (PT-09) | ≈ 3 s | ≤ 3,5 s |
-| Pruebas automáticas (PT-12) | 11 ejecutadas, 0 fallos | Sin fallos |
+| Pruebas automáticas (PT-12) | 14 ejecutadas, 0 fallos | Sin fallos |
 
 ---
 

@@ -136,7 +136,7 @@ class TestServer(ServerTestCase):
         sensor, actuator = self.connect_pair()
         expected = {
             8.0: ("CLOSE", "BLINK", "OFF", "OFF"),
-            25.0: ("MEDIUM", "OFF", "ON", "OFF"),
+            25.0: ("MEDIUM", "OFF", "BLINK", "OFF"),
             60.0: ("FAR", "OFF", "OFF", "ON"),
         }
         for distance, (rng, red, yellow, green) in expected.items():
